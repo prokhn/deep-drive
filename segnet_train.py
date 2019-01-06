@@ -1,6 +1,7 @@
 import os
 import gc
 import cv2
+import sys
 import tqdm
 import random
 import numpy as np
@@ -38,6 +39,44 @@ def load_image(filepath, resize=True, pic_h=int(2710 / 4), pic_w=int(3384 / 4)):
         img = cv2.resize(cv2.imread(y), (pic_h, pic_w), interpolation=cv2.INTER_NEAREST)
 
     return filepath, img
+
+
+def load_one(pathes):
+    try:
+        xfilepath, yfilepath = pathes
+
+        pic_h = 672
+        pic_w = 832
+
+        # Start: Labels conversion dict ===========================
+        labels = {
+            (0, 0, 0):       [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            (8, 35, 142):    [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            (43, 173, 180):  [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            (153, 102, 153): [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            (234, 168, 160): [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            (192, 0, 0):     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            (8, 32, 128):    [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            (12, 51, 204):   [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            (70, 25, 100):   [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            (14, 57, 230):   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            (75, 47, 190):   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            (255, 255, 255): [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]}
+        labels = dict([(k, np.array(v)) for k, v in labels.items()])
+        # End:   Labels conversion dict ===========================
+
+        img = cv2.resize(cv2.imread(xfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
+        lbl = cv2.resize(cv2.imread(yfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
+
+        mask = np.zeros((pic_h, pic_w, len(labels)))
+        for rgb, categorical_lbl in labels.items():
+            mask[(lbl == rgb).all(2)] = categorical_lbl
+
+        print('Loaded', xfilepath)
+        return img, mask
+    except Exception as e:
+        print('!!! Exception', e)
+        return None, None
 
 
 def load_pair(task_queue, out_queue):
@@ -124,38 +163,37 @@ def prepare_for_train(model_name=''):
 
 def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build, load_from: int, load_to: int):
     x_paths, y_paths = get_filenames()
-    # print(f'Got {x_paths.__len__()} xdata filenames and {y_paths.__len__()} ydata filenames')
 
     load_total = load_to - load_from
-
-    q_tasks = Queue()
-    q_outs = Queue()
-
-    for i in range(load_from, load_to):
-        q_tasks.put((x_paths[i], y_paths[i]))
-    for i in range(PROCESSES):
-        q_tasks.put(('', ''))
 
     # Img and masks arrays
     x_data = np.zeros((load_total, PIC_H, PIC_W, 3), dtype=np.uint8)
     y_data = np.zeros((load_total, PIC_H, PIC_W, 12), dtype=np.float64)
 
-    processes = [Process(target=load_pair, args=(q_tasks, q_outs,)) for _ in range(PROCESSES)]
-    for p in processes:
-        p.start()
+    x_paths = x_paths[:load_to]
+    y_paths = y_paths[:load_to]
 
-    for i in tqdm.tqdm(range(load_total)):
-        img, mask = q_outs.get()
-        x_data[i] = img
-        y_data[i] = mask
+    print('Starting pool')
+    with Pool(30) as p:
+        result = p.map(load_one, zip(x_paths, y_paths))
+    print('Pool closed')
 
-    print('Converting data...')
+    index = 0
+    for _ in tqdm.tqdm(range(result.__len__())):
+        _x, _y = result[index]
+        if _x is not None:
+            x_data[index] = _x
+            y_data[index] = _y
+            index += 1
+
+    print(f'Problems occured with {len(result) - index}, data shape before {x_data.shape}; {y_data.shape}')
+    x_data: np.ndarray = x_data[:index]
+    y_data: np.ndarray = y_data[:index]
+    print(f'Data shape in result: {x_data.shape}; {y_data.shape}')
+
+    print('Data loaded, starting conversion...')
     x_data = x_data / 255.
-    # print('Converting y_data... [reshaping]')
     y_data = y_data.reshape(len(y_data), PIC_H * PIC_W, LABELS_NUMBER)
-
-    for p in processes:
-        p.join()
 
     print(f'Data converted, starting {model_name} training at {sup_epoch} epoch')
 
@@ -174,9 +212,6 @@ def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build,
 
     del x_data
     del y_data
-    del q_tasks
-    del q_outs
-    del processes
 
     return segnet
 
@@ -204,11 +239,16 @@ if __name__ == '__main__':
                     (3488, 4360), (4360, 5232), (5232, 6104), (6104, 6976),
                     (6976, 7848), (7848, 8720), (8720, 9592), (9592, 10464 + 1)]
 
+    if sys.argv.__len__() > 1 and sys.argv[1] == '--batch':
+        bslice = int(sys.argv[-1])
+        mini_batches = mini_batches[bslice:]
+        print(f'Skipped first {bslice} batches')
+
     model_name, segnet = prepare_for_train()
 
-    print('='*50)
+    print('=' * 50)
     print(f'Segnet "{model_name}" created and compiled'.center(50))
-    print('='*50)
+    print('=' * 50)
 
     for epoch in range(1, epochs_number + 1):
         print('=' * 50)
