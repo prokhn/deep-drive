@@ -1,6 +1,8 @@
 import os
+import gc
 import cv2
 import tqdm
+import random
 import numpy as np
 from skimage.io import imsave
 from multiprocessing import Pool, Process, Queue
@@ -10,6 +12,11 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 
 from segnet import SegnetBuilder
 from keras.callbacks import EarlyStopping, ModelCheckpoint
+
+# \ Globals ============
+PIC_H, PIC_W = 672, 832
+LABELS_NUMBER = 12
+PROCESSES = 30
 
 
 def get_filenames(datapath='lane_marking_examples'):
@@ -104,75 +111,116 @@ def predict_to_label(predictions):
     return masks
 
 
-x_paths, y_paths = get_filenames()
-print(f'Got {x_paths.__len__()} xdata filenames and {y_paths.__len__()} ydata filenames')
+def prepare_for_train(model_name=''):
+    if model_name == '':
+        model_name = f'Segnet {str(random.randint(0, 100)).zfill(3)}'
 
-PROCESSES = 30
-LOAD_FROM = 0
-LOAD_TO = 100
-LOADED_TOTAL = LOAD_TO - LOAD_FROM
+    segnet = SegnetBuilder.build(model_name, PIC_W, PIC_H, 3, LABELS_NUMBER)
 
-PIC_H, PIC_W = 672, 832
-LABELS_NUMBER = 12
+    segnet.compile(loss='categorical_crossentropy', optimizer='SGD', metrics=['accuracy'])
 
-q_tasks = Queue()
-q_outs = Queue()
+    return model_name, segnet
 
-for i in range(LOAD_FROM, LOAD_TO):
-    q_tasks.put((x_paths[i], y_paths[i]))
-for i in range(PROCESSES):
-    q_tasks.put(('', ''))
 
-# Img and masks arrays
-x_data = np.zeros((LOADED_TOTAL, PIC_H, PIC_W, 3), dtype=np.uint8)
-y_data = np.zeros((LOADED_TOTAL, PIC_H, PIC_W, 12), dtype=np.float64)
+def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build, load_from: int, load_to: int):
+    x_paths, y_paths = get_filenames()
+    # print(f'Got {x_paths.__len__()} xdata filenames and {y_paths.__len__()} ydata filenames')
 
-processes = [Process(target=load_pair, args=(q_tasks, q_outs,)) for _ in range(PROCESSES)]
-for p in processes:
-    p.start()
+    load_total = load_to - load_from
 
-for i in tqdm.tqdm_notebook(range(LOADED_TOTAL)):
-    img, mask = q_outs.get()
-    x_data[i] = img
-    y_data[i] = mask
+    q_tasks = Queue()
+    q_outs = Queue()
 
-print('Converting x_data...')
-x_data = x_data / 255.
-print('Converting y_data... [reshaping]')
-y_data = y_data.reshape(len(y_data), PIC_H * PIC_W, LABELS_NUMBER)
+    for i in range(load_from, load_to):
+        q_tasks.put((x_paths[i], y_paths[i]))
+    for i in range(PROCESSES):
+        q_tasks.put(('', ''))
 
-for p in processes:
-    p.join()
+    # Img and masks arrays
+    x_data = np.zeros((load_total, PIC_H, PIC_W, 3), dtype=np.uint8)
+    y_data = np.zeros((load_total, PIC_H, PIC_W, 12), dtype=np.float64)
 
-print('Goto-vo')
+    processes = [Process(target=load_pair, args=(q_tasks, q_outs,)) for _ in range(PROCESSES)]
+    for p in processes:
+        p.start()
 
-model_name = 'Segnet-1000'
-segnet = SegnetBuilder.build(model_name, PIC_W, PIC_H, 3, LABELS_NUMBER)
+    for i in tqdm.tqdm(range(load_total)):
+        img, mask = q_outs.get()
+        x_data[i] = img
+        y_data[i] = mask
 
-segnet.compile(loss='categorical_crossentropy', optimizer='SGD', metrics=['accuracy'])
+    print('Converting data...')
+    x_data = x_data / 255.
+    # print('Converting y_data... [reshaping]')
+    y_data = y_data.reshape(len(y_data), PIC_H * PIC_W, LABELS_NUMBER)
 
-early_stop = EarlyStopping(monitor='val_acc', min_delta=0.0001,
-                           patience=10, verbose=1, mode='auto')
-checkpoint = ModelCheckpoint(f'models/{model_name}.hdf5',
-                             monitor='val_loss',
-                             verbose=1,
-                             save_best_only=True,
-                             mode='auto')
+    for p in processes:
+        p.join()
 
-callbacks = [early_stop, checkpoint]
+    print(f'Data converted, starting {model_name} training at {sup_epoch} epoch')
 
-history = segnet.fit(x_data, y_data, batch_size=1, epochs=20,
-                     verbose=1, validation_split=0.2, callbacks=callbacks)
+    early_stop = EarlyStopping(monitor='val_loss', min_delta=0.001,
+                               patience=3, verbose=1, mode='min')  # mode='auto' for val_acc
+    checkpoint = ModelCheckpoint(f'models/{model_name} s[{sup_epoch}].hdf5',
+                                 monitor='val_loss',
+                                 verbose=1,
+                                 save_best_only=True,
+                                 mode='auto')
 
-pred_index = 999
-print('Making predictions...')
-predictions = segnet.predict(np.expand_dims(x_data[pred_index], axis=0))
+    callbacks = [early_stop, checkpoint]
 
-print('Converting pred to human mask...')
-human_pred = predict_to_label(predictions)[0]
-print('Converting mask to human mask...')
-human_mask = predict_to_label([y_data[pred_index]])[0]
+    segnet.fit(x_data, y_data, batch_size=1, epochs=1,
+               verbose=1, validation_split=0.2, callbacks=callbacks)
 
-print('Saving result...')
-imsave('img.png', np.concatenate((human_mask, human_pred), axis=0))
-print('Goto-vo')
+    del x_data
+    del y_data
+    del q_tasks
+    del q_outs
+    del processes
+
+    return segnet
+
+
+def check_prediction(pred_index=999):
+    print('Making predictions...')
+    predictions = segnet.predict(np.expand_dims(x_data[pred_index], axis=0))
+
+    print('Converting pred to human mask...')
+    human_pred = predict_to_label(predictions)[0]
+    print('Converting mask to human mask...')
+    human_mask = predict_to_label([y_data[pred_index]])[0]
+
+    print('Saving result...')
+    imsave('img.png', np.concatenate((human_mask, human_pred), axis=0))
+    print('Goto-vo')
+
+
+if __name__ == '__main__':
+    # Total 10464 images in dataset
+    # 12 mini batches with 872 images in each
+    # 2 epoch per each batch - 24 epochs total
+    epochs_number = 2
+    mini_batches = [(0, 872), (872, 1744), (1744, 2616), (2616, 3488),
+                    (3488, 4360), (4360, 5232), (5232, 6104), (6104, 6976),
+                    (6976, 7848), (7848, 8720), (8720, 9592), (9592, 10464 + 1)]
+
+    model_name, segnet = prepare_for_train()
+
+    print('='*50)
+    print(f'Segnet "{model_name}" created and compiled'.center(50))
+    print('='*50)
+
+    for epoch in range(1, epochs_number + 1):
+        print('=' * 50)
+        print(f'Batch epoch {epoch} started')
+        for batch_start, batch_end in mini_batches:
+            print('-' * 50)
+            print(f'Training on batch ({batch_start}, {batch_end})')
+            segnet = train_on_batch(epoch, model_name, segnet, batch_start, batch_end)
+
+            print('-' * 50)
+            print(f'Training on batch ({batch_start}, {batch_end}) ended, clearing garbage')
+            gc.collect()
+            print('Garbage collected')
+
+    print('Training ended without errors')
