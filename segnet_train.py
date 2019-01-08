@@ -15,9 +15,10 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 import keras.backend as K
 from segnet import SegnetBuilder
 from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.optimizers import Adam
 
 # \ Globals ============
-PIC_H, PIC_W = 672, 832
+PIC_H, PIC_W = 192, 192  # 672, 832
 LABELS_NUMBER = 12
 PROCESSES = 30
 
@@ -35,7 +36,7 @@ def w_categorical_crossentropy(weights):
     return loss
 
 
-def get_filenames(datapath='lane_marking_examples'):
+def get_filenames(datapath='data_prepaired'):  # lane_marking_examples
     filenames = []
     for top, dirs, files in os.walk(datapath):
         filenames.extend([os.path.join(top, _file) for _file in files])
@@ -44,6 +45,7 @@ def get_filenames(datapath='lane_marking_examples'):
     x_paths = [x for x in filenames if not x.endswith('bin.png')]
     y_paths = [x for x in filenames if x.endswith('bin.png')]
 
+    # print(x_paths.__len__())
     return x_paths, y_paths
 
 
@@ -60,8 +62,8 @@ def load_one(pathes):
     try:
         xfilepath, yfilepath, file_ind = pathes
 
-        pic_h = 672
-        pic_w = 832
+        pic_h = PIC_H
+        pic_w = PIC_W
 
         # Start: Labels conversion dict ===========================
         labels = {
@@ -80,8 +82,10 @@ def load_one(pathes):
         labels = dict([(k, np.array(v)) for k, v in labels.items()])
         # End:   Labels conversion dict ===========================
 
-        img = cv2.resize(cv2.imread(xfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
-        lbl = cv2.resize(cv2.imread(yfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
+        # img = cv2.resize(cv2.imread(xfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
+        # lbl = cv2.resize(cv2.imread(yfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
+        img = cv2.imread(xfilepath)
+        lbl = cv2.imread(yfilepath)
 
         mask = np.zeros((pic_h, pic_w, len(labels)))
         for rgb, categorical_lbl in labels.items():
@@ -92,48 +96,6 @@ def load_one(pathes):
     except Exception as e:
         print('!!! Exception', e)
         return None, None
-
-
-def load_pair(task_queue, out_queue):
-    # Height and width to resize images
-    # Defaults: 2710, 3384
-    # Coef = 4: 677, 846 [OLD]
-    # Coef ~ 4: 672, 832 [Divisible by 32]
-
-    pic_h = 672
-    pic_w = 832
-
-    # Start: Labels conversion dict ===========================
-    labels = {
-        (0, 0, 0):       [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        (8, 35, 142):    [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        (43, 173, 180):  [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        (153, 102, 153): [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-        (234, 168, 160): [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-        (192, 0, 0):     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-        (8, 32, 128):    [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-        (12, 51, 204):   [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-        (70, 25, 100):   [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-        (14, 57, 230):   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-        (75, 47, 190):   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-        (255, 255, 255): [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]}
-    labels = dict([(k, np.array(v)) for k, v in labels.items()])
-    # End:   Labels conversion dict ===========================
-
-    while True:
-        xfilepath, yfilepath = task_queue.get()
-
-        if xfilepath == '':
-            break
-
-        img = cv2.resize(cv2.imread(xfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
-        lbl = cv2.resize(cv2.imread(yfilepath), (pic_w, pic_h), interpolation=cv2.INTER_NEAREST)
-
-        mask = np.zeros((pic_h, pic_w, len(labels)))
-        for rgb, categorical_lbl in labels.items():
-            mask[(lbl == rgb).all(2)] = categorical_lbl
-
-        out_queue.put((img, mask))
 
 
 def predict_to_label(predictions):
@@ -173,7 +135,7 @@ def prepare_for_train(model_name=''):
 
     # wcc_loss = w_categorical_crossentropy()
 
-    segnet.compile(loss='categorical_crossentropy', optimizer='Adam', metrics=['accuracy'])
+    segnet.compile(loss='categorical_crossentropy', optimizer=Adam(), metrics=['accuracy'])
 
     return model_name, segnet
 
@@ -197,7 +159,7 @@ def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build,
     print('Pool closed', ' ' * 20)
 
     index = 0
-    for _ in tqdm.tqdm(range(load_total)):
+    for _ in range(load_total):
         _x, _y = result[index]
         if _x is not None:
             x_data[index] = _x
@@ -211,73 +173,69 @@ def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build,
         print(f'Problems occured with {load_total - index} images')
     else:
         print(f'No problems occured during data loading')
-    # , data shape before {x_data.shape}; {y_data.shape}
-    # x_data: np.ndarray = x_data[:index]
-    # y_data: np.ndarray = y_data[:index]
-    # print(f'Data shape in result: {x_data.shape}; {y_data.shape}')
 
     print('Data loaded, starting conversion...')
     x_data = x_data / 255.
-    y_data = y_data.reshape(len(y_data), PIC_H * PIC_W, LABELS_NUMBER)
+    # y_data = y_data.reshape(len(y_data), PIC_H * PIC_W, LABELS_NUMBER)
 
     print(f'Data converted, starting "{model_name}" training at {sup_epoch} epoch batch {load_from} to {load_to}')
 
-    # early_stop = EarlyStopping(monitor='val_loss', min_delta=0.001,
-    #                            patience=3, verbose=1, mode='min')  # mode='auto' for val_acc
-    # checkpoint = ModelCheckpoint(f'models/{model_name} s[{sup_epoch}]b[{load_from}_{load_to}].hdf5',
-    #                              monitor='val_loss',
-    #                              verbose=1,
-    #                              save_best_only=True,
-    #                              mode='auto')
-    #
-    # callbacks = [early_stop, checkpoint]
-    callbacks = []
+    # print(x_data[0][0], '\n\n\n', y_data[0].reshape(PIC_H, PIC_W, LABELS_NUMBER)[0])
 
-    segnet.fit(x_data[:index], y_data[:index], batch_size=1, epochs=1,
-               verbose=1, validation_split=0.2, callbacks=callbacks)
+    #     early_stop = EarlyStopping(monitor='val_loss', min_delta=0.001,
+    #                                patience=3, verbose=1, mode='min')  # mode='auto' for val_acc
+    checkpoint = ModelCheckpoint(f'models/{model_name} s[{sup_epoch}]b[{load_from}_{load_to}] best.hdf5',
+                                 monitor='val_loss',
+                                 verbose=1,
+                                 save_best_only=True,
+                                 mode='auto')
 
-    _fname = f'models/{model_name} s[{sup_epoch}]b[{load_from}_{load_to}].hdf5'
+    callbacks = [checkpoint]  # , early_stop]
+
+    segnet.fit(x_data[:index], y_data[:index], batch_size=16, epochs=500,
+               verbose=1, validation_split=0.2, callbacks=callbacks)  #
+
+    _fname = f'models/{model_name} s[{sup_epoch}]b[{load_from}_{load_to}] res.hdf5'
     segnet.save_weights(_fname)
     print(f'Training ended, weights saved to {_fname}')
 
     return segnet
 
 
-def check_prediction(pred_index=999):
-    print('Making predictions...')
-    predictions = segnet.predict(np.expand_dims(x_data[pred_index], axis=0))
+def check_prediction(segnet: SegnetBuilder.build, fname, pred_index=210):
+    x_paths, y_paths = get_filenames()
+    img, mask = load_one([x_paths[pred_index], y_paths[pred_index], 0])
 
-    print('Converting pred to human mask...')
+    print(f'Making predictions for image index {pred_index}')
+    predictions = segnet.predict(np.expand_dims(img, axis=0))
+
+    print('Converting prediction...')
     human_pred = predict_to_label(predictions)[0]
-    print('Converting mask to human mask...')
-    human_mask = predict_to_label([y_data[pred_index]])[0]
+    human_mask = predict_to_label([mask])[0]
 
-    print('Saving result...')
-    imsave('img.png', np.concatenate((human_mask, human_pred), axis=0))
-    print('Goto-vo')
+    print(f'Saving result to {fname}')
+    imsave(fname, np.concatenate((human_mask, human_pred), axis=0))
 
 
 if __name__ == '__main__':
     # Total 10464 images in dataset
     # 16 mini batches with 654 images in each
     # 2 epoch per each batch - 32 epochs total
-    epochs_number = 2
+    epochs_number = 1
     # mini_batches = [(0, 872), (872, 1744), (1744, 2616), (2616, 3488),
     #                 (3488, 4360), (4360, 5232), (5232, 6104), (6104, 6976),
     #                 (6976, 7848), (7848, 8720), (8720, 9592), (9592, 10464 + 1)]
-    batch_size = 654
-    mini_batches = [(batch_size * i, batch_size * (i + 1)) for i in range(10464 // 654)]
-
+    batch_size = 16
+    # mini_batches = [(batch_size * i, batch_size * (i + 1)) for i in range(10464 // 654)]
+    # mini_batches = [(0, 150), (150, 300)]
+    mini_batches = [(0, 16)]
     if sys.argv.__len__() > 1 and sys.argv[1] == '--batch':
         bslice = int(sys.argv[-1])
         mini_batches = mini_batches[bslice:]
         print(f'Skipped first {bslice} batches')
 
     model_name, segnet = prepare_for_train()
-
-    print('Creating img and masks arrays')
-    x_data = np.zeros((batch_size, PIC_H, PIC_W, 3), dtype=np.uint8)
-    y_data = np.zeros((batch_size, PIC_H, PIC_W, LABELS_NUMBER), dtype=np.float64)
+    # print(segnet.summary())
 
     print('=' * 50)
     print(f'Segnet "{model_name}" created and compiled'.center(50))
@@ -287,9 +245,14 @@ if __name__ == '__main__':
         print('=' * 50)
         print(f'Batch epoch {epoch} started')
         for batch_start, batch_end in mini_batches:
+            print('Recreating img and masks arrays')
+            x_data = np.zeros((batch_size, PIC_H, PIC_W, 3), dtype=np.uint8)
+            y_data = np.zeros((batch_size, PIC_H, PIC_W, LABELS_NUMBER), dtype=np.float64)
+
             print('-' * 50)
             print(f'Training on batch ({batch_start}, {batch_end})')
             segnet = train_on_batch(epoch, model_name, segnet, x_data, y_data, batch_start, batch_end)
+            check_prediction(segnet, f'{model_name} img s[{epoch}]b[{batch_start}_{batch_end}].png')
 
             print('-' * 50)
             print(f'Training on batch ({batch_start}, {batch_end}) ended, clearing garbage')

@@ -1,17 +1,20 @@
 import json
 from keras import models
+from keras.layers import Lambda
 from keras.layers.core import Activation, Reshape, Permute
 from keras.layers.convolutional import Conv2D, MaxPooling2D, UpSampling2D
 from keras.layers.normalization import BatchNormalization
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 
 
+# BatchNormalization = lambda: Lambda(lambda x: x)
+
 class SegnetBuilder:
     @staticmethod
     def build(model_name, img_h, img_w, img_layers, n_labels, kernel=3,
               save_path='models/{}.json') -> models.Sequential:
         encoding_layers = [
-            Conv2D(64, kernel, padding='same', input_shape=(img_w, img_h, img_layers)),
+            Conv2D(64, kernel, padding='same', input_shape=(None, None, img_layers)),
             BatchNormalization(),
             Activation('relu'),
             Conv2D(64, kernel, padding='same'),
@@ -122,11 +125,11 @@ class SegnetBuilder:
         for l in autoencoder.decoding_layers:
             autoencoder.add(l)
 
-        autoencoder.add(Reshape((n_labels, img_h * img_w)))
-        autoencoder.add(Permute((2, 1)))
+        # autoencoder.add(Reshape((n_labels, img_h * img_w)))
+        # autoencoder.add(Permute((2, 1)))
         autoencoder.add(Activation('softmax'))
 
-        with open(save_path.format(model_name), 'w') as outfile:
-            outfile.write(json.dumps(json.loads(autoencoder.to_json()), indent=2))
+        # with open(save_path.format(model_name), 'w') as outfile:
+        # outfile.write(json.dumps(json.loads(autoencoder.to_json()), indent=2))
 
         return autoencoder
