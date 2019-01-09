@@ -182,15 +182,15 @@ def train_on_batch(sup_epoch: int, model_name: str, segnet: SegnetBuilder.build,
 
     # print(x_data[0][0], '\n\n\n', y_data[0].reshape(PIC_H, PIC_W, LABELS_NUMBER)[0])
 
-    #     early_stop = EarlyStopping(monitor='val_loss', min_delta=0.001,
-    #                                patience=3, verbose=1, mode='min')  # mode='auto' for val_acc
+    early_stop = EarlyStopping(monitor='val_loss', min_delta=0.001,
+                               patience=15, verbose=1, mode='min')  # mode='auto' for val_acc
     checkpoint = ModelCheckpoint(f'models/{model_name} s[{sup_epoch}]b[{load_from}_{load_to}] best.hdf5',
                                  monitor='val_loss',
                                  verbose=1,
                                  save_best_only=True,
                                  mode='auto')
 
-    callbacks = [checkpoint]  # , early_stop]
+    callbacks = [checkpoint, early_stop]
 
     segnet.fit(x_data[:index], y_data[:index], batch_size=16, epochs=500,
                verbose=1, validation_split=0.2, callbacks=callbacks)  #
@@ -225,10 +225,10 @@ if __name__ == '__main__':
     # mini_batches = [(0, 872), (872, 1744), (1744, 2616), (2616, 3488),
     #                 (3488, 4360), (4360, 5232), (5232, 6104), (6104, 6976),
     #                 (6976, 7848), (7848, 8720), (8720, 9592), (9592, 10464 + 1)]
-    batch_size = 16
-    # mini_batches = [(batch_size * i, batch_size * (i + 1)) for i in range(10464 // 654)]
-    # mini_batches = [(0, 150), (150, 300)]
-    mini_batches = [(0, 16)]
+    batch_size = 10000
+    #     mini_batches = [(batch_size * i, batch_size * (i + 1)) for i in range(10464 // 654)]
+    #     mini_batches = [(0, 150), (150, 300)]
+    mini_batches = [(0, 10000)]
     if sys.argv.__len__() > 1 and sys.argv[1] == '--batch':
         bslice = int(sys.argv[-1])
         mini_batches = mini_batches[bslice:]

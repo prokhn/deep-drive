@@ -6,7 +6,6 @@ from keras.layers.convolutional import Conv2D, MaxPooling2D, UpSampling2D
 from keras.layers.normalization import BatchNormalization
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 
-
 # BatchNormalization = lambda: Lambda(lambda x: x)
 
 class SegnetBuilder:
@@ -130,6 +129,6 @@ class SegnetBuilder:
         autoencoder.add(Activation('softmax'))
 
         # with open(save_path.format(model_name), 'w') as outfile:
-        # outfile.write(json.dumps(json.loads(autoencoder.to_json()), indent=2))
+            # outfile.write(json.dumps(json.loads(autoencoder.to_json()), indent=2))
 
         return autoencoder
